@@ -25,7 +25,17 @@ pfrexp_float(const Packet& a, Packet& exponent) {
   const Packet cst_126f = pset1<Packet>(126.0f);
   const Packet cst_half = pset1<Packet>(0.5f);
   const Packet cst_inv_mant_mask  = pset1frombits<Packet>(~0x7f800000u);
-  exponent = psub(pcast<PacketI,Packet>(pshiftright<23>(preinterpret<PacketI>(a))), cst_126f);
+  exponent = psub(pcast<PacketI,Packet>(plogical_shift_right<23>(preinterpret<PacketI>(a))), cst_126f);
+  return por(pand(a, cst_inv_mant_mask), cst_half);
+}
+
+template<typename Packet> EIGEN_STRONG_INLINE Packet
+pfrexp_double(const Packet& a, Packet& exponent) {
+  typedef typename unpacket_traits<Packet>::integer_packet PacketI;
+  const Packet cst_1022d = pset1<Packet>(1022.0);
+  const Packet cst_half = pset1<Packet>(0.5);
+  const Packet cst_inv_mant_mask  = pset1frombits<Packet>(static_cast<uint64_t>(~0x7ff0000000000000ull));
+  exponent = psub(pcast<PacketI,Packet>(plogical_shift_right<52>(preinterpret<PacketI>(a))), cst_1022d);
   return por(pand(a, cst_inv_mant_mask), cst_half);
 }
 
@@ -36,7 +46,17 @@ pldexp_float(Packet a, Packet exponent)
   const Packet cst_127 = pset1<Packet>(127.f);
   // return a * 2^exponent
   PacketI ei = pcast<Packet,PacketI>(padd(exponent, cst_127));
-  return pmul(a, preinterpret<Packet>(pshiftleft<23>(ei)));
+  return pmul(a, preinterpret<Packet>(plogical_shift_left<23>(ei)));
+}
+
+template<typename Packet> EIGEN_STRONG_INLINE Packet
+pldexp_double(Packet a, Packet exponent)
+{
+  typedef typename unpacket_traits<Packet>::integer_packet PacketI;
+  const Packet cst_1023 = pset1<Packet>(1023.0);
+  // return a * 2^exponent
+  PacketI ei = pcast<Packet,PacketI>(padd(exponent, cst_1023));
+  return pmul(a, preinterpret<Packet>(plogical_shift_left<52>(ei)));
 }
 
 // Natural logarithm
@@ -108,6 +128,114 @@ Packet plog_float(const Packet _x)
   y  = pmadd(y, x3, y1);
   y  = pmadd(y, x3, y2);
   y  = pmul(y, x3);
+
+  // Add the logarithm of the exponent back to the result of the interpolation.
+  y1  = pmul(e, cst_cephes_log_q1);
+  tmp = pmul(x2, cst_half);
+  y   = padd(y, y1);
+  x   = psub(x, tmp);
+  y2  = pmul(e, cst_cephes_log_q2);
+  x   = padd(x, y);
+  x   = padd(x, y2);
+
+  Packet invalid_mask = pcmp_lt_or_nan(_x, pzero(_x));
+  Packet iszero_mask  = pcmp_eq(_x,pzero(_x));
+  Packet pos_inf_mask = pcmp_eq(_x,cst_pos_inf);
+  // Filter out invalid inputs, i.e.:
+  //  - negative arg will be NAN
+  //  - 0 will be -INF
+  //  - +INF will be +INF
+  return pselect(iszero_mask, cst_minus_inf,
+                              por(pselect(pos_inf_mask,cst_pos_inf,x), invalid_mask));
+}
+
+
+/* Returns the base e (2.718...) logarithm of x.
+ * The argument is separated into its exponent and fractional
+ * parts.  If the exponent is between -1 and +1, the logarithm
+ * of the fraction is approximated by
+ *
+ *     log(1+x) = x - 0.5 x**2 + x**3 P(x)/Q(x).
+ *
+ * Otherwise, setting  z = 2(x-1)/x+1),
+ *                     log(x) = z + z**3 P(z)/Q(z).
+ * 
+ * for more detail see: http://www.netlib.org/cephes/
+ */
+template <typename Packet>
+EIGEN_DEFINE_FUNCTION_ALLOWING_MULTIPLE_DEFINITIONS
+EIGEN_UNUSED
+Packet plog_double(const Packet _x)
+{
+  Packet x = _x;
+
+  const Packet cst_1              = pset1<Packet>(1.0);
+  const Packet cst_half           = pset1<Packet>(0.5);
+  // The smallest non denormalized float number.
+  const Packet cst_min_norm_pos   = pset1frombits<Packet>( static_cast<uint64_t>(0x0010000000000000ull));
+  const Packet cst_minus_inf      = pset1frombits<Packet>( static_cast<uint64_t>(0xfff0000000000000ull));
+  const Packet cst_pos_inf        = pset1frombits<Packet>( static_cast<uint64_t>(0x7ff0000000000000ull));
+
+ // Polynomial Coefficients for log(1+x) = x - x**2/2 + x**3 P(x)/Q(x)
+ //                             1/sqrt(2) <= x < sqrt(2)
+  const Packet cst_cephes_SQRTHF = pset1<Packet>(0.70710678118654752440E0);
+  const Packet cst_cephes_log_p0 = pset1<Packet>(1.01875663804580931796E-4);
+  const Packet cst_cephes_log_p1 = pset1<Packet>(4.97494994976747001425E-1);
+  const Packet cst_cephes_log_p2 = pset1<Packet>(4.70579119878881725854E0);
+  const Packet cst_cephes_log_p3 = pset1<Packet>(1.44989225341610930846E1);
+  const Packet cst_cephes_log_p4 = pset1<Packet>(1.79368678507819816313E1);
+  const Packet cst_cephes_log_p5 = pset1<Packet>(7.70838733755885391666E0);
+
+  const Packet cst_cephes_log_r0 = pset1<Packet>(1.0);
+  const Packet cst_cephes_log_r1 = pset1<Packet>(1.12873587189167450590E1);
+  const Packet cst_cephes_log_r2 = pset1<Packet>(4.52279145837532221105E1);
+  const Packet cst_cephes_log_r3 = pset1<Packet>(8.29875266912776603211E1);
+  const Packet cst_cephes_log_r4 = pset1<Packet>(7.11544750618563894466E1);
+  const Packet cst_cephes_log_r5 = pset1<Packet>(2.31251620126765340583E1);
+
+  const Packet cst_cephes_log_q1 = pset1<Packet>(-2.121944400546905827679e-4);
+  const Packet cst_cephes_log_q2 = pset1<Packet>(0.693359375);
+
+  // Truncate input values to the minimum positive normal.
+  x = pmax(x, cst_min_norm_pos);
+
+  Packet e;
+  // extract significant in the range [0.5,1) and exponent
+  x = pfrexp(x,e);
+  
+  // Shift the inputs from the range [0.5,1) to [sqrt(1/2),sqrt(2))
+  // and shift by -1. The values are then centered around 0, which improves
+  // the stability of the polynomial evaluation.
+  //   if( x < SQRTHF ) {
+  //     e -= 1;
+  //     x = x + x - 1.0;
+  //   } else { x = x - 1.0; }
+  Packet mask = pcmp_lt(x, cst_cephes_SQRTHF);
+  Packet tmp = pand(x, mask);
+  x = psub(x, cst_1);
+  e = psub(e, pand(cst_1, mask));
+  x = padd(x, tmp);
+
+  Packet x2 = pmul(x, x);
+  Packet x3 = pmul(x2, x);
+
+  // Evaluate the polynomial approximant , probably to improve instruction-level parallelism.
+  // y = x * ( z * polevl( x, P, 5 ) / p1evl( x, Q, 5 ) );
+  Packet y, y1, y2,y_;
+  y  = pmadd(cst_cephes_log_p0, x, cst_cephes_log_p1);
+  y1 = pmadd(cst_cephes_log_p3, x, cst_cephes_log_p4);
+  y  = pmadd(y, x, cst_cephes_log_p2);
+  y1 = pmadd(y1, x, cst_cephes_log_p5);
+  y_ = pmadd(y, x3, y1);
+
+  y  = pmadd(cst_cephes_log_r0, x, cst_cephes_log_r1);
+  y1 = pmadd(cst_cephes_log_r3, x, cst_cephes_log_r4);
+  y  = pmadd(y, x, cst_cephes_log_r2);
+  y1 = pmadd(y1, x, cst_cephes_log_r5);
+  y  = pmadd(y, x3, y1);
+
+  y_ = pmul(y_, x3);
+  y  = pdiv(y_, y);
 
   // Add the logarithm of the exponent back to the result of the interpolation.
   y1  = pmul(e, cst_cephes_log_q1);
@@ -233,6 +361,10 @@ Packet pexp_float(const Packet _x)
   return pmax(pldexp(y,m), _x);
 }
 
+// make it the default path for scalar float
+template<>
+EIGEN_DEVICE_FUNC inline float pexp(const float& a) { return pexp_float(a); }
+
 template <typename Packet>
 EIGEN_DEFINE_FUNCTION_ALLOWING_MULTIPLE_DEFINITIONS
 EIGEN_UNUSED
@@ -300,6 +432,10 @@ Packet pexp_double(const Packet _x)
   // non-finite values in the input.
   return pmax(pldexp(x,fx), _x);
 }
+
+// make it the default path for scalar double
+template<>
+EIGEN_DEVICE_FUNC inline double pexp(const double& a) { return pexp_double(a); }
 
 // The following code is inspired by the following stack-overflow answer:
 //   https://stackoverflow.com/questions/30463616/payne-hanek-algorithm-implementation-in-c/30465751#30465751
@@ -458,8 +594,8 @@ Packet psincos_float(const Packet& _x)
   // Compute the sign to apply to the polynomial.
   // sin: sign = second_bit(y_int) xor signbit(_x)
   // cos: sign = second_bit(y_int+1)
-  Packet sign_bit = ComputeSine ? pxor(_x, preinterpret<Packet>(pshiftleft<30>(y_int)))
-                                : preinterpret<Packet>(pshiftleft<30>(padd(y_int,csti_1)));
+  Packet sign_bit = ComputeSine ? pxor(_x, preinterpret<Packet>(plogical_shift_left<30>(y_int)))
+                                : preinterpret<Packet>(plogical_shift_left<30>(padd(y_int,csti_1)));
   sign_bit = pand(sign_bit, cst_sign_mask); // clear all but left most bit
 
   // Get the polynomial selection mask from the second bit of y_int
@@ -567,6 +703,77 @@ struct ppolevl<Packet, 0> {
   static EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE Packet run(const Packet& x, const typename unpacket_traits<Packet>::type coeff[]) {
     EIGEN_UNUSED_VARIABLE(x);
     return pset1<Packet>(coeff[0]);
+  }
+};
+
+/* chbevl (modified for Eigen)
+ *
+ *     Evaluate Chebyshev series
+ *
+ *
+ *
+ * SYNOPSIS:
+ *
+ * int N;
+ * Scalar x, y, coef[N], chebevl();
+ *
+ * y = chbevl( x, coef, N );
+ *
+ *
+ *
+ * DESCRIPTION:
+ *
+ * Evaluates the series
+ *
+ *        N-1
+ *         - '
+ *  y  =   >   coef[i] T (x/2)
+ *         -            i
+ *        i=0
+ *
+ * of Chebyshev polynomials Ti at argument x/2.
+ *
+ * Coefficients are stored in reverse order, i.e. the zero
+ * order term is last in the array.  Note N is the number of
+ * coefficients, not the order.
+ *
+ * If coefficients are for the interval a to b, x must
+ * have been transformed to x -> 2(2x - b - a)/(b-a) before
+ * entering the routine.  This maps x from (a, b) to (-1, 1),
+ * over which the Chebyshev polynomials are defined.
+ *
+ * If the coefficients are for the inverted interval, in
+ * which (a, b) is mapped to (1/b, 1/a), the transformation
+ * required is x -> 2(2ab/x - b - a)/(b-a).  If b is infinity,
+ * this becomes x -> 4a/x - 1.
+ *
+ *
+ *
+ * SPEED:
+ *
+ * Taking advantage of the recurrence properties of the
+ * Chebyshev polynomials, the routine requires one more
+ * addition per loop than evaluating a nested polynomial of
+ * the same degree.
+ *
+ */
+
+template <typename Packet, int N>
+struct pchebevl {
+  EIGEN_DEVICE_FUNC
+  static EIGEN_STRONG_INLINE Packet run(Packet x, const typename unpacket_traits<Packet>::type coef[]) {
+    typedef typename unpacket_traits<Packet>::type Scalar;
+    Packet b0 = pset1<Packet>(coef[0]);
+    Packet b1 = pset1<Packet>(static_cast<Scalar>(0.f));
+    Packet b2;
+
+    for (int i = 1; i < N; i++) {
+      b2 = b1;
+      b1 = b0;
+      b0 = psub(pmadd(x, b1, pset1<Packet>(coef[i])), b2);
+    }
+
+    return pmul(pset1<Packet>(static_cast<Scalar>(0.5f)), psub(b0, b2));
   }
 };
 

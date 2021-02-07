@@ -1,7 +1,7 @@
 // This file is part of Eigen, a lightweight C++ template library
 // for linear algebra.
 //
-// Copyright (C) 2008-2010 Gael Guennebaud <gael.guennebaud@inria.fr>
+// Copyright (C) 2008-2019 Gael Guennebaud <gael.guennebaud@inria.fr>
 // Copyright (C) 2006-2008 Benoit Jacob <jacob.benoit.1@gmail.com>
 //
 // This Source Code Form is subject to the terms of the Mozilla
@@ -279,23 +279,47 @@ template<typename ExpressionType, int Direction> class VectorwiseOp
     /** This is the const version of iterator (aka read-only) */
     random_access_iterator_type const_iterator;
     #else
-    typedef internal::subvector_stl_iterator<ExpressionType,       DirectionType(Direction)> iterator;
-    typedef internal::subvector_stl_iterator<const ExpressionType, DirectionType(Direction)> const_iterator;
+    typedef internal::subvector_stl_iterator<ExpressionType,               DirectionType(Direction)> iterator;
+    typedef internal::subvector_stl_iterator<const ExpressionType,         DirectionType(Direction)> const_iterator;
+    typedef internal::subvector_stl_reverse_iterator<ExpressionType,       DirectionType(Direction)> reverse_iterator;
+    typedef internal::subvector_stl_reverse_iterator<const ExpressionType, DirectionType(Direction)> const_reverse_iterator;
     #endif
 
     /** returns an iterator to the first row (rowwise) or column (colwise) of the nested expression.
       * \sa end(), cbegin()
       */
-    iterator        begin() const { return iterator      (m_matrix, 0); }
+    iterator                 begin()       { return iterator      (m_matrix, 0); }
     /** const version of begin() */
-    const_iterator cbegin() const { return const_iterator(m_matrix, 0); }
+    const_iterator           begin() const { return const_iterator(m_matrix, 0); }
+    /** const version of begin() */
+    const_iterator          cbegin() const { return const_iterator(m_matrix, 0); }
+
+    /** returns a reverse iterator to the last row (rowwise) or column (colwise) of the nested expression.
+      * \sa rend(), crbegin()
+      */
+    reverse_iterator        rbegin()       { return reverse_iterator       (m_matrix, m_matrix.template subVectors<DirectionType(Direction)>()-1); }
+	/** const version of rbegin() */
+    const_reverse_iterator  rbegin() const { return const_reverse_iterator (m_matrix, m_matrix.template subVectors<DirectionType(Direction)>()-1); }
+	/** const version of rbegin() */
+	const_reverse_iterator crbegin() const { return const_reverse_iterator (m_matrix, m_matrix.template subVectors<DirectionType(Direction)>()-1); }
 
     /** returns an iterator to the row (resp. column) following the last row (resp. column) of the nested expression
       * \sa begin(), cend()
       */
-    iterator        end()   const { return iterator      (m_matrix, m_matrix.template subVectors<DirectionType(Direction)>()); }
+    iterator                 end()         { return iterator      (m_matrix, m_matrix.template subVectors<DirectionType(Direction)>()); }
     /** const version of end() */
-    const_iterator cend()   const { return const_iterator(m_matrix, m_matrix.template subVectors<DirectionType(Direction)>()); }
+    const_iterator           end()  const  { return const_iterator(m_matrix, m_matrix.template subVectors<DirectionType(Direction)>()); }
+    /** const version of end() */
+    const_iterator          cend()  const  { return const_iterator(m_matrix, m_matrix.template subVectors<DirectionType(Direction)>()); }
+
+    /** returns a reverse iterator to the row (resp. column) before the first row (resp. column) of the nested expression
+      * \sa begin(), cend()
+      */
+    reverse_iterator        rend()         { return reverse_iterator       (m_matrix, -1); }
+    /** const version of rend() */
+    const_reverse_iterator  rend()  const  { return const_reverse_iterator (m_matrix, -1); }
+    /** const version of rend() */
+    const_reverse_iterator crend()  const  { return const_reverse_iterator (m_matrix, -1); }
 
     /** \returns a row or column vector expression of \c *this reduxed by \a func
       *
@@ -714,6 +738,10 @@ template<typename ExpressionType, int Direction> class VectorwiseOp
 
     EIGEN_DEVICE_FUNC
     const HNormalizedReturnType hnormalized() const;
+
+#   ifdef EIGEN_VECTORWISEOP_PLUGIN
+#     include EIGEN_VECTORWISEOP_PLUGIN
+#   endif
 
   protected:
     Index redux_length() const
